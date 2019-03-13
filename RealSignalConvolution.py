@@ -1,7 +1,10 @@
 from buildwaveforms import energy2time
 import numpy as np
 from scipy.signal import unit_impulse
+from scipy.signal import hilbert
+from scipy import sparse
 import matplotlib.pyplot as plt
+import time
 
 def hama_response(N):
     filename = 'ave1/C1--HighPulse-in-100-out1700-an2100--00000.dat'
@@ -38,14 +41,6 @@ def generate_sparse_convolmatrix(havg):
     return hsparse
  
 def main():
-    """Target in this cell is to sample energies according to an energy distribution with the change in central energy.
-    Also get the time corresponding time of arrivals(TOAs).
-
-    from buildwaveforms import energy2time
-    import numpy as np
-    from scipy.signal import unit_impulse
-    import matplotlib.pyplot as plt"""
-
     E0i = 5.0  #eV
     E0f = 95.0 #eV
     delta_E0i = 0 #ev
@@ -72,37 +67,77 @@ def main():
 
     E_dist = np.sum(E_dist,axis=0)  
     time_TOA = np.resize(energy2time(E_rand),(N_E0_pts*N_E_sam,1))
-    #print time_TOA
 
-    #find the hit indices on time axis
-    timeaxis_TOA = np.linspace(min(time_TOA)-5,max(time_TOA)+5,10000)
+    timeaxis, h = hama_response(N_E_sam)
+    havg = np.mean(h,axis=0)
+    timeaxis = timeaxis[timeaxis.size/2:]
+    havg = havg[havg.size/2:]
+
+    #rescale timeaxis and havg
+    rescale_pts = int((((max(time_TOA)-min(time_TOA)+10)*1e-9)/timeaxis[-1])*timeaxis.size)
+    timeaxis_new = np.linspace(min(time_TOA)-5,max(time_TOA)+5,rescale_pts)
+
+    nzeros = np.zeros(rescale_pts-havg.size)
+    havg = np.append(havg,nzeros)
+
+    thr = []
+    frac =0.05
+    havg_im = np.imag(hilbert(havg))
+    snr = np.abs(havg)**2+np.abs(havg_im)**2
+    for i in range(havg.size):
+        thr.append(frac*max(snr))
+
+    havg_mod = np.zeros(havg.size)
+    for i in range(havg.size):
+        if snr[i]>=thr[0]:
+            havg_mod[i] = havg[i]
+
+    #generate signal
     ids=np.empty([0])
     count = 0
-    resol = timeaxis_TOA[1]-timeaxis_TOA[0]
-    for i in range(timeaxis_TOA.size-1,0,-1):
+    resol = timeaxis_new[1]-timeaxis_new[0]
+    for i in range(timeaxis_new.size-1,0,-1):
         if count<time_TOA.size:
             t = int(time_TOA[count])
             fr = time_TOA[count]-t
-            if t==int(timeaxis_TOA[i]):
+            if t==int(timeaxis_new[i]):
                 ids = np.append(ids,i+int(fr/resol))
                 count +=1
     ids = ids.astype(int)
-    s_TOA = unit_impulse(timeaxis_TOA.shape,ids)
+    s = unit_impulse(timeaxis_new.shape,ids)
 
-    plt.subplots_adjust(hspace=0.8)
+    #generate sparse convolution matrix
+    start = time.time()
+
+    hsparse = generate_sparse_convolmatrix(havg_mod)
+
+    s_cpy = sparse.lil_matrix((1,s.size))
+    s_cpy[:] = s[:]
+    y_mod = (hsparse.tocsr()*s_cpy.tocsr().transpose())
+
+    end = time.time()
+    print 'Time elapsed= %i ms'%((end - start)*1000)
+    
+    plt.subplots_adjust(hspace=0.5)
     ax1 = plt.subplot(211)
     ax1.set_title('Distribution in E')
     ax1.plot(E,E_dist)
     ax1.set_xlabel('E(eV)')
     ax1.set_ylabel('D(E,E0)')
     ax1.grid(True)
-
+    
     ax2 = plt.subplot(212)
     ax2.set_title('Distribution in t')
-    ax2.plot(timeaxis_TOA,s_TOA)
+    ax2.plot(timeaxis_new,s)
     ax2.set_xlabel('t(ns)')
     ax2.set_ylabel('D(t,E0)')
     ax2.grid(True)
+
+    fig = plt.figure()
+    plt.plot(timeaxis_new,s,label='Ground Truth')
+    plt.plot(timeaxis_new,y_mod.todense(),label='Convoluted Signal Output')
+    plt.grid(True)
+    plt.legend()
 
 
 if __name__ == '__main__':
